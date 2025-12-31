@@ -3,18 +3,18 @@
   "version": "1.0.0",
   "description": "Babel plugin to inject source metadata into JSX components for debugging and inspection",
   "main": "index.js",
-  "keywords": [
-    "babel-plugin",
-    "jsx",
-    "react",
-    "source-maps",
-    "debugging"
+  "exports": {
+    ".": "./index.js",
+    "./runtime": "./runtime.js"
+  },
+  "files": [
+    "index.js",
+    "runtime.js"
   ],
   "author": "",
   "license": "MIT",
   "peerDependencies": {
-    "@babel/core": "^7.0.0",
-    "@babel/parser": "^7.0.0"
+    "@babel/core": "^7.0.0"
   },
   "repository": {
     "type": "git",

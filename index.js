@@ -6,29 +6,55 @@ module.exports = function ({ types: t }) {
             state.fileName = state.file.opts.filename || 'unknown';
             state.componentStack = []; // Track nested components
             
-            // Track if selector has been injected globally
-            if (!state.file.selectorInjected) {
-              state.file.selectorInjected = false;
-            }
-          },
-          exit(path, state) {
-            // Inject selector script once per app (only in files with JSX)
-            if (state.file.selectorInjected) return;
+            // Check if this file has JSX and should get the runtime
+            const hasJSXInFile = hasJSX(path);
+            if (!hasJSXInFile) return;
             
-            const fileName = state.fileName;
-            const isRootFile = fileName.includes('layout.tsx') || 
-                              fileName.includes('_app') || 
-                              fileName.includes('page.tsx');
-            
-            // Only inject in root files to avoid duplicates
-            // Prefer client components, but also inject in server components (will run on client)
-            if (isRootFile && hasJSXInProgram(path)) {
-              try {
-                injectSelectorScript(path, t);
-                state.file.selectorInjected = true;
-              } catch (err) {
-                // Silently fail if injection fails
+            // Check if file has "use server" directive (Next.js server-only file)
+            const isServerOnly = path.node.directives?.some(
+              directive => {
+                const value = directive.value;
+                return value && (
+                  (typeof value === 'string' && value === 'use server') ||
+                  (value.value === 'use server')
+                );
               }
+            );
+            
+            // Skip server-only files (runtime is client-side only)
+            if (isServerOnly) return;
+            
+            // Check if runtime is already imported
+            const hasRuntimeImport = path.node.body.some(node => {
+              if (t.isImportDeclaration(node)) {
+                const sourceValue = node.source.value;
+                return sourceValue === 'babel-plugin-jsx-component-source/runtime' ||
+                       sourceValue === './runtime' ||
+                       sourceValue === '../runtime' ||
+                       sourceValue.includes('babel-plugin-jsx-component-source/runtime');
+              }
+              return false;
+            });
+            
+            if (!hasRuntimeImport) {
+              // Inject the runtime import at the top of the file (after other imports)
+              const runtimeImport = t.importDeclaration(
+                [],
+                t.stringLiteral('babel-plugin-jsx-component-source/runtime')
+              );
+              
+              // Find the last import statement to insert after it
+              let insertIndex = 0;
+              for (let i = 0; i < path.node.body.length; i++) {
+                if (t.isImportDeclaration(path.node.body[i])) {
+                  insertIndex = i + 1;
+                } else if (!t.isExpressionStatement(path.node.body[i])) {
+                  // Stop at first non-import, non-directive statement
+                  break;
+                }
+              }
+              
+              path.node.body.splice(insertIndex, 0, runtimeImport);
             }
           }
         },
@@ -142,176 +168,5 @@ module.exports = function ({ types: t }) {
       JSXElement() { hasJSXElement = true; }
     });
     return hasJSXElement;
-  }
-
-  function hasJSXInProgram(path) {
-    let hasJSXElement = false;
-    path.traverse({
-      JSXElement() { hasJSXElement = true; }
-    });
-    return hasJSXElement;
-  }
-
-  function injectSelectorScript(path, t) {
-    // Use @babel/parser to parse the selector code string
-    try {
-      const parser = require('@babel/parser');
-      const selectorCode = `(function() {
-        if (typeof window === 'undefined') return;
-        if (window.__sourceSelectorInitialized) return;
-        window.__sourceSelectorInitialized = true;
-        let isActive = false;
-        let highlightedElement = null;
-        
-        function loadHtmlToImage() {
-          return new Promise(function(resolve, reject) {
-            if (window.htmlToImage) {
-              resolve(window.htmlToImage);
-              return;
-            }
-            if (window.__htmlToImageLoading) {
-              window.__htmlToImageLoading.then(resolve).catch(reject);
-              return;
-            }
-            window.__htmlToImageLoading = new Promise(function(loadResolve, loadReject) {
-              const script = document.createElement('script');
-              script.src = 'https://cdn.jsdelivr.net/npm/html-to-image@1.11.11/dist/html-to-image.js';
-              script.onload = function() {
-                if (window.htmlToImage) {
-                  loadResolve(window.htmlToImage);
-                } else {
-                  loadReject(new Error('html-to-image failed to load'));
-                }
-              };
-              script.onerror = function() {
-                loadReject(new Error('Failed to load html-to-image'));
-              };
-              document.head.appendChild(script);
-            });
-            window.__htmlToImageLoading.then(resolve).catch(reject);
-          });
-        }
-        
-        function initSelector() {
-          window.__sourceSelectorReady = true;
-          
-          window.addEventListener('message', function(event) {
-            if (event.data && event.data.type === 'ENABLE_SOURCE_SELECTOR') {
-              isActive = true;
-            } else if (event.data && event.data.type === 'DISABLE_SOURCE_SELECTOR') {
-              isActive = false;
-              if (highlightedElement) {
-                highlightedElement.style.outline = '';
-                highlightedElement = null;
-              }
-            }
-          });
-          document.addEventListener('mouseover', function(e) {
-            if (!isActive) return;
-            if (highlightedElement && highlightedElement !== e.target) {
-              highlightedElement.style.outline = '';
-            }
-            e.target.style.outline = '2px solid #3b82f6';
-            e.target.style.outlineOffset = '2px';
-            highlightedElement = e.target;
-          }, true);
-          document.addEventListener('click', function(e) {
-            if (!isActive) return;
-            
-            let target = e.target;
-            let attempts = 0;
-            while (target && attempts < 10) {
-              const component = target.getAttribute('data-source-component');
-              const file = target.getAttribute('data-source-file');
-              const line = target.getAttribute('data-source-line');
-              
-              if (component || file || line) {
-                e.preventDefault();
-                e.stopPropagation();
-                e.stopImmediatePropagation();
-                
-                loadHtmlToImage().then(function(htmlToImage) {
-                  return htmlToImage.toPng(target, {
-                    cacheBust: true,
-                    pixelRatio: 1
-                  });
-                }).then(function(dataUrl) {
-                  const messageData = {
-                    type: 'SOURCE_SELECTED',
-                    data: {
-                      component: component || 'unknown',
-                      file: file || 'unknown',
-                      line: line || 'unknown',
-                      screenshot: dataUrl,
-                      element: {
-                        tagName: target.tagName,
-                        id: target.id || '',
-                        className: target.className || ''
-                      }
-                    }
-                  };
-                  if (window.parent && window.parent !== window) {
-                    try {
-                      window.parent.postMessage(messageData, '*');
-                    } catch (err) {
-                    }
-                  }
-                  isActive = false;
-                  if (highlightedElement) {
-                    highlightedElement.style.outline = '';
-                    highlightedElement = null;
-                  }
-                }).catch(function(err) {
-                  const messageData = {
-                    type: 'SOURCE_SELECTED',
-                    data: {
-                      component: component || 'unknown',
-                      file: file || 'unknown',
-                      line: line || 'unknown',
-                      screenshot: null,
-                      error: err.message || 'Unknown error',
-                      element: {
-                        tagName: target.tagName,
-                        id: target.id || '',
-                        className: target.className || ''
-                      }
-                    }
-                  };
-                  if (window.parent && window.parent !== window) {
-                    try {
-                      window.parent.postMessage(messageData, '*');
-                    } catch (err) {
-                    }
-                  }
-                  isActive = false;
-                  if (highlightedElement) {
-                    highlightedElement.style.outline = '';
-                    highlightedElement = null;
-                  }
-                });
-                return;
-              }
-              target = target.parentElement;
-              attempts++;
-            }
-          }, true);
-        }
-        if (document.readyState === 'loading') {
-          document.addEventListener('DOMContentLoaded', initSelector);
-        } else {
-          initSelector();
-        }
-      })();`;
-      
-      const parsed = parser.parse(selectorCode, {
-        sourceType: 'script',
-        allowReturnOutsideFunction: true
-      });
-      
-      // Inject the parsed code at the end of the program
-      path.pushContainer('body', parsed.program.body);
-    } catch (e) {
-      // Silently fail if parsing fails
-    }
   }
   
