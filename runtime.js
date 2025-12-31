@@ -8,6 +8,24 @@ if (typeof window !== 'undefined' && !window.__sourceSelectorInitialized) {
   let isActive = false;
   let highlightedElement = null;
   
+  function elementToString(element) {
+    var tagName = element.tagName.toLowerCase();
+    var attrs = [];
+    
+    if (element.attributes && element.attributes.length > 0) {
+      for (var i = 0; i < element.attributes.length; i++) {
+        var attr = element.attributes[i];
+        var name = attr.name;
+        var value = attr.value;
+        var escapedValue = value.replace(/"/g, '&quot;');
+        attrs.push(name + '="' + escapedValue + '"');
+      }
+    }
+    
+    var attrString = attrs.length > 0 ? ' ' + attrs.join(' ') : '';
+    return '<' + tagName + attrString + '>';
+  }
+  
   function loadHtmlToImage() {
     return new Promise(function(resolve, reject) {
       if (window.htmlToImage) {
@@ -90,11 +108,7 @@ if (typeof window !== 'undefined' && !window.__sourceSelectorInitialized) {
                 file: file || 'unknown',
                 line: line || 'unknown',
                 screenshot: dataUrl,
-                element: {
-                  tagName: target.tagName,
-                  id: target.id || '',
-                  className: target.className || ''
-                }
+                element: elementToString(target)
               }
             };
             if (window.parent && window.parent !== window) {
@@ -118,11 +132,7 @@ if (typeof window !== 'undefined' && !window.__sourceSelectorInitialized) {
                 line: line || 'unknown',
                 screenshot: null,
                 error: err.message || 'Unknown error',
-                element: {
-                  tagName: target.tagName,
-                  id: target.id || '',
-                  className: target.className || ''
-                }
+                element: elementToString(target)
               }
             };
             if (window.parent && window.parent !== window) {
