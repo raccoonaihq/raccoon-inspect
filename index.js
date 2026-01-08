@@ -1,3 +1,14 @@
+function hashString(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  // Convert to positive number and base36 for short representation
+  return Math.abs(hash).toString(36);
+}
+
 module.exports = function ({ types: t }) {
   return {
     visitor: {
@@ -121,7 +132,9 @@ module.exports = function ({ types: t }) {
       JSXOpeningElement(path, state) {
         const fileName = state.fileName;
         const line = (path.node.loc?.start?.line || 1).toString();
+        const column = (path.node.loc?.start?.column || 0).toString();
         const componentName = state.componentStack[state.componentStack.length - 1] || 'unknown';
+        const raccoonId = hashString(`${fileName}:${line}:${column}`);
         
         path.node.attributes.push(
           t.jsxAttribute(
@@ -135,6 +148,10 @@ module.exports = function ({ types: t }) {
           t.jsxAttribute(
             t.jsxIdentifier('data-source-component'),
             t.stringLiteral(componentName)
+          ),
+          t.jsxAttribute(
+            t.jsxIdentifier('data-raccoon-id'),
+            t.stringLiteral(raccoonId)
           )
         );
       }

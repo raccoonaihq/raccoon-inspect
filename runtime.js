@@ -2,13 +2,28 @@ if (typeof window !== 'undefined' && !window.__sourceSelectorInitialized) {
   console.log('[raccoon-inspect] Runtime module loaded');
   window.__sourceSelectorInitialized = true;
   
+  // Add shake animation CSS
+  const style = document.createElement('style');
+  style.textContent = `
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      25% { transform: translateX(-5px); }
+      75% { transform: translateX(5px); }
+    }
+  `;
+  document.head.appendChild(style);
+  
   let isActive = false;
   let isToolbarOpen = false;
   let hoveredElement = null;
-  let selectedTaggedElement = null;
+  let selectedTaggedElements = [];
+  let selectionHighlights = new Map();
+  let hoverHighlights = []; // Array of hover highlight elements
   let overlayBlocker = null;
   let overlayHighlight = null;
   let toolbar = null;
+  let lastClickPosition = { x: 0, y: 0 };
+  let scrollRafId = null;
   
   const COLORS = {
     card: 'hsl(240, 6%, 12%)',
@@ -16,7 +31,10 @@ if (typeof window !== 'undefined' && !window.__sourceSelectorInitialized) {
     muted: 'hsl(240, 5%, 20%)',
     mutedForeground: 'hsl(240, 5%, 65%)',
     accentForeground: 'hsl(0, 0%, 98%)',
-    primary: '#5b5fc7',
+    primary: '#5d5fef',
+    primaryLight: 'rgba(93, 95, 239, 0.15)',
+    primaryMuted: 'rgba(93, 95, 239, 0.4)',
+    primaryDashed: 'rgba(93, 95, 239, 0.7)', // More visible dashed border
     primaryHover: '#4a4cd4'
   };
   
@@ -44,9 +62,10 @@ if (typeof window !== 'undefined' && !window.__sourceSelectorInitialized) {
       const component = target.getAttribute?.('data-source-component');
       const file = target.getAttribute?.('data-source-file');
       const line = target.getAttribute?.('data-source-line');
+      const raccoonId = target.getAttribute?.('data-raccoon-id');
       
       if (component || file || line) {
-        return { target, component, file, line };
+        return { target, component, file, line, raccoonId };
       }
       
       target = target.parentElement;
@@ -54,6 +73,11 @@ if (typeof window !== 'undefined' && !window.__sourceSelectorInitialized) {
     }
     
     return null;
+  }
+  
+  function getAllElementsWithRaccoonId(raccoonId) {
+    if (!raccoonId) return [];
+    return Array.from(document.querySelectorAll(`[data-raccoon-id="${raccoonId}"]`));
   }
   
   function postSelectionMessage(payload) {
@@ -69,34 +93,171 @@ if (typeof window !== 'undefined' && !window.__sourceSelectorInitialized) {
     }
   }
   
+  function clearHoverHighlights() {
+    hoverHighlights.forEach(h => {
+      h.parentNode?.removeChild(h);
+    });
+    hoverHighlights = [];
+  }
+  
   function setHighlight(target) {
-    if (!overlayHighlight) return;
+    // Clear any existing hover highlights
+    clearHoverHighlights();
     
     if (!target) {
-      overlayHighlight.style.display = 'none';
       return;
     }
     
-    const rect = target.getBoundingClientRect();
-    overlayHighlight.style.display = 'block';
-    overlayHighlight.style.left = `${rect.left}px`;
-    overlayHighlight.style.top = `${rect.top}px`;
-    overlayHighlight.style.width = `${rect.width}px`;
-    overlayHighlight.style.height = `${rect.height}px`;
+    // Find all elements with the same raccoonId and show hover highlights for all
+    const tagged = findTaggedElement(target);
+    if (!tagged || !tagged.raccoonId) {
+      return;
+    }
+    
+    const allElements = getAllElementsWithRaccoonId(tagged.raccoonId);
+    
+    // If any element is selected, update its highlight style for hover
+    if (isElementSelected(tagged.raccoonId)) {
+      updateSelectionHighlightStyle(tagged.raccoonId, true);
+      return;
+    }
+    
+    // Create hover highlights for all matching elements
+    allElements.forEach((elem) => {
+      const highlight = document.createElement('div');
+      highlight.style.position = 'fixed';
+      highlight.style.border = `2px dashed ${COLORS.primaryDashed}`;
+      highlight.style.borderRadius = '3px';
+      highlight.style.opacity = '1';
+      highlight.style.boxSizing = 'border-box';
+      highlight.style.pointerEvents = 'none';
+      highlight.style.zIndex = '2147483647';
+      highlight.style.transition = 'opacity 0.12s ease';
+      highlight.setAttribute('data-raccoon-hover', 'true');
+      
+      const rect = elem.getBoundingClientRect();
+      highlight.style.left = `${rect.left}px`;
+      highlight.style.top = `${rect.top}px`;
+      highlight.style.width = `${rect.width}px`;
+      highlight.style.height = `${rect.height}px`;
+      
+      document.body.appendChild(highlight);
+      hoverHighlights.push(highlight);
+    });
+  }
+  
+  function isElementSelected(raccoonId) {
+    return selectedTaggedElements.some(el => el.raccoonId === raccoonId);
+  }
+  
+  function addSelectionHighlight(element, raccoonId) {
+    if (!element || !raccoonId) return;
+    
+    // Remove existing highlights if present
+    removeSelectionHighlight(raccoonId);
+    
+    // Find all elements with this raccoonId and create highlights for each
+    const allElements = getAllElementsWithRaccoonId(raccoonId);
+    const highlights = [];
+    
+    allElements.forEach((elem) => {
+      const highlight = document.createElement('div');
+      highlight.style.position = 'fixed';
+      highlight.style.border = `1.5px solid ${COLORS.primary}`;
+      highlight.style.borderRadius = '3px';
+      highlight.style.boxShadow = `0 0 0 0.5px ${COLORS.primaryMuted}, 0 0 12px ${COLORS.primaryLight}`;
+      highlight.style.boxSizing = 'border-box';
+      highlight.style.pointerEvents = 'none';
+      highlight.style.zIndex = '2147483647';
+      highlight.style.transition = 'box-shadow 0.12s ease';
+      highlight.setAttribute('data-raccoon-id', raccoonId);
+      highlight.setAttribute('data-raccoon-highlight', 'true');
+      
+      const rect = elem.getBoundingClientRect();
+      highlight.style.left = `${rect.left}px`;
+      highlight.style.top = `${rect.top}px`;
+      highlight.style.width = `${rect.width}px`;
+      highlight.style.height = `${rect.height}px`;
+      
+      document.body.appendChild(highlight);
+      highlights.push(highlight);
+    });
+    
+    selectionHighlights.set(raccoonId, highlights);
+  }
+  
+  function removeSelectionHighlight(raccoonId) {
+    const highlights = selectionHighlights.get(raccoonId);
+    if (highlights) {
+      highlights.forEach((highlight) => {
+        highlight.parentNode?.removeChild(highlight);
+      });
+      selectionHighlights.delete(raccoonId);
+    }
+  }
+  
+  function clearAllSelectionHighlights() {
+    selectionHighlights.forEach((highlights) => {
+      highlights.forEach((highlight) => {
+        highlight.parentNode?.removeChild(highlight);
+      });
+    });
+    selectionHighlights.clear();
+  }
+  
+  function updateSelectionHighlights() {
+    selectedTaggedElements.forEach((tagged) => {
+      const highlights = selectionHighlights.get(tagged.raccoonId);
+      if (highlights) {
+        const allElements = getAllElementsWithRaccoonId(tagged.raccoonId);
+        allElements.forEach((elem, index) => {
+          if (highlights[index]) {
+            const rect = elem.getBoundingClientRect();
+            highlights[index].style.left = `${rect.left}px`;
+            highlights[index].style.top = `${rect.top}px`;
+            highlights[index].style.width = `${rect.width}px`;
+            highlights[index].style.height = `${rect.height}px`;
+          }
+        });
+      }
+    });
+  }
+  
+  function updateSelectionHighlightStyle(raccoonId, isHovered) {
+    const highlights = selectionHighlights.get(raccoonId);
+    if (!highlights) return;
+    
+    highlights.forEach((highlight) => {
+      if (isHovered) {
+        // Enhanced glow for selected + hovered (morph editing style)
+        highlight.style.boxShadow = `0 0 0 0.5px ${COLORS.primaryMuted}, 0 0 16px ${COLORS.primaryLight}, inset 0 0 0 1px ${COLORS.primaryLight}`;
+      } else {
+        // Normal glow for selected only
+        highlight.style.boxShadow = `0 0 0 0.5px ${COLORS.primaryMuted}, 0 0 12px ${COLORS.primaryLight}`;
+      }
+    });
   }
   
   function getUnderlyingElement(x, y) {
     const prevBlockerPointer = overlayBlocker?.style.pointerEvents;
     const prevBlockerVisibility = overlayBlocker?.style.visibility;
-    const prevHighlightVisibility = overlayHighlight?.style.visibility;
     const prevToolbarVisibility = toolbar?.style.visibility;
+    
+    // Store previous visibility states for selection highlights
+    const selectionHighlightStates = new Map();
+    selectionHighlights.forEach((highlights, raccoonId) => {
+      const states = highlights.map(h => h.style.visibility);
+      selectionHighlightStates.set(raccoonId, states);
+      highlights.forEach(h => h.style.visibility = 'hidden');
+    });
+    
+    // Hide hover highlights
+    const hoverHighlightStates = hoverHighlights.map(h => h.style.visibility);
+    hoverHighlights.forEach(h => h.style.visibility = 'hidden');
     
     if (overlayBlocker) {
       overlayBlocker.style.pointerEvents = 'none';
       overlayBlocker.style.visibility = 'hidden';
-    }
-    if (overlayHighlight) {
-      overlayHighlight.style.visibility = 'hidden';
     }
     if (toolbar) {
       toolbar.style.visibility = 'hidden';
@@ -108,12 +269,22 @@ if (typeof window !== 'undefined' && !window.__sourceSelectorInitialized) {
       overlayBlocker.style.pointerEvents = prevBlockerPointer || 'auto';
       overlayBlocker.style.visibility = prevBlockerVisibility || 'visible';
     }
-    if (overlayHighlight) {
-      overlayHighlight.style.visibility = prevHighlightVisibility || 'visible';
-    }
     if (toolbar) {
       toolbar.style.visibility = prevToolbarVisibility || 'visible';
     }
+    
+    // Restore selection highlights visibility
+    selectionHighlights.forEach((highlights, raccoonId) => {
+      const states = selectionHighlightStates.get(raccoonId) || [];
+      highlights.forEach((h, i) => {
+        h.style.visibility = states[i] || 'visible';
+      });
+    });
+    
+    // Restore hover highlights visibility
+    hoverHighlights.forEach((h, i) => {
+      h.style.visibility = hoverHighlightStates[i] || 'visible';
+    });
     
     return element;
   }
@@ -123,12 +294,27 @@ if (typeof window !== 'undefined' && !window.__sourceSelectorInitialized) {
     
     const underlying = getUnderlyingElement(event.clientX, event.clientY);
     if (!underlying || underlying === overlayBlocker || underlying === overlayHighlight) {
+      // Reset any previously hovered selected element
+      if (hoveredElement) {
+        const prevTagged = findTaggedElement(hoveredElement);
+        if (prevTagged && isElementSelected(prevTagged.raccoonId)) {
+          updateSelectionHighlightStyle(prevTagged.raccoonId, false);
+        }
+      }
       hoveredElement = null;
       setHighlight(null);
       return;
     }
     
     if (hoveredElement !== underlying) {
+      // Reset previous hovered element if it was selected
+      if (hoveredElement) {
+        const prevTagged = findTaggedElement(hoveredElement);
+        if (prevTagged && isElementSelected(prevTagged.raccoonId)) {
+          updateSelectionHighlightStyle(prevTagged.raccoonId, false);
+        }
+      }
+      
       hoveredElement = underlying;
       setHighlight(hoveredElement);
     }
@@ -144,8 +330,36 @@ if (typeof window !== 'undefined' && !window.__sourceSelectorInitialized) {
     const underlying = getUnderlyingElement(event.clientX, event.clientY);
     const tagged = underlying ? findTaggedElement(underlying) : null;
     
-    if (tagged) {
-      selectedTaggedElement = tagged;
+    if (!tagged) return;
+    
+    lastClickPosition = { x: event.clientX, y: event.clientY };
+    
+    if (event.shiftKey) {
+      // Shift-click: Toggle selection
+      const existingIndex = selectedTaggedElements.findIndex(
+        el => el.raccoonId === tagged.raccoonId
+      );
+      
+      if (existingIndex !== -1) {
+        // Remove from selection
+        selectedTaggedElements.splice(existingIndex, 1);
+        removeSelectionHighlight(tagged.raccoonId);
+      } else {
+        // Add to selection
+        selectedTaggedElements.push(tagged);
+        addSelectionHighlight(tagged.target, tagged.raccoonId);
+      }
+    } else {
+      // Normal click: Add to selection and show toolbar
+      const existingIndex = selectedTaggedElements.findIndex(
+        el => el.raccoonId === tagged.raccoonId
+      );
+      
+      if (existingIndex === -1) {
+        selectedTaggedElements.push(tagged);
+        addSelectionHighlight(tagged.target, tagged.raccoonId);
+      }
+      
       isToolbarOpen = true;
       showToolbar(event.clientX, event.clientY);
     }
@@ -161,7 +375,7 @@ if (typeof window !== 'undefined' && !window.__sourceSelectorInitialized) {
         <input 
           type="text" 
           class="raccoon-inspect-input" 
-          placeholder="Enter your query..."
+          placeholder="Ask agent to make changes..."
           autocomplete="off"
         />
         <button type="submit" class="raccoon-inspect-submit">
@@ -252,13 +466,31 @@ if (typeof window !== 'undefined' && !window.__sourceSelectorInitialized) {
     // Handle form submission
     form.addEventListener('submit', handleFormSubmit);
     
-    // Handle Escape key to cancel
-    input.addEventListener('keydown', (e) => {
+    // Prevent ALL keyboard events from bubbling up to iframe's global listeners
+    // But handle Escape key first before stopping propagation
+    toolbar.addEventListener('keydown', (e) => {
+      // Handle Escape key to cancel
       if (e.key === 'Escape') {
         e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
         cancelSelection();
+        return;
       }
-    });
+      
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+    }, true);
+    
+    toolbar.addEventListener('keyup', (e) => {
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+    }, true);
+    
+    toolbar.addEventListener('keypress', (e) => {
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+    }, true);
     
     document.body.appendChild(toolbar);
     
@@ -306,19 +538,32 @@ if (typeof window !== 'undefined' && !window.__sourceSelectorInitialized) {
     const input = toolbar?.querySelector('.raccoon-inspect-input');
     const query = input?.value?.trim() || '';
     
-    if (selectedTaggedElement) {
-      postSelectionMessage({
-        component: selectedTaggedElement.component || 'unknown',
-        file: selectedTaggedElement.file || 'unknown',
-        line: selectedTaggedElement.line || 'unknown',
-        element: elementToString(selectedTaggedElement.target),
-        query: query
-      });
+    // Validate non-empty selection
+    if (selectedTaggedElements.length === 0) {
+      // Show visual feedback - shake animation
+      if (toolbar) {
+        toolbar.style.animation = 'shake 0.3s';
+        setTimeout(() => {
+          if (toolbar) toolbar.style.animation = '';
+        }, 300);
+      }
+      return;
     }
+    
+    postSelectionMessage({
+      elements: selectedTaggedElements.map(tagged => ({
+        component: tagged.component || 'unknown',
+        file: tagged.file || 'unknown',
+        line: tagged.line || 'unknown',
+        raccoonId: tagged.raccoonId || 'unknown',
+        element: elementToString(tagged.target)
+      })),
+      query: query
+    });
     
     isActive = false;
     isToolbarOpen = false;
-    selectedTaggedElement = null;
+    selectedTaggedElements = [];
     cleanupOverlays();
   }
   
@@ -336,12 +581,22 @@ if (typeof window !== 'undefined' && !window.__sourceSelectorInitialized) {
     
     isActive = false;
     isToolbarOpen = false;
-    selectedTaggedElement = null;
+    selectedTaggedElements = [];
+    clearAllSelectionHighlights();
     cleanupOverlays();
   }
   
+  function handleScrollResize() {
+    if (scrollRafId !== null) return;
+    
+    scrollRafId = requestAnimationFrame(() => {
+      updateSelectionHighlights();
+      scrollRafId = null;
+    });
+  }
+  
   function createOverlays() {
-    if (overlayBlocker || overlayHighlight) return;
+    if (overlayBlocker) return;
     
     overlayBlocker = document.createElement('div');
     overlayBlocker.style.position = 'fixed';
@@ -352,34 +607,35 @@ if (typeof window !== 'undefined' && !window.__sourceSelectorInitialized) {
     overlayBlocker.style.userSelect = 'none';
     overlayBlocker.style.pointerEvents = 'auto';
     
-    overlayHighlight = document.createElement('div');
-    overlayHighlight.style.position = 'fixed';
-    overlayHighlight.style.border = '2px solid #4d5fef';
-    overlayHighlight.style.boxSizing = 'border-box';
-    overlayHighlight.style.pointerEvents = 'none';
-    overlayHighlight.style.zIndex = '2147483647';
-    overlayHighlight.style.display = 'none';
-    
     overlayBlocker.addEventListener('mousemove', handlePointerMove, true);
     overlayBlocker.addEventListener('click', handleOverlayClick, true);
     
+    // Add scroll/resize handlers with RAF throttling
+    window.addEventListener('scroll', handleScrollResize, true);
+    window.addEventListener('resize', handleScrollResize);
+    
     document.body.appendChild(overlayBlocker);
-    document.body.appendChild(overlayHighlight);
   }
   
   function cleanupOverlays() {
     hoveredElement = null;
+    selectedTaggedElements = [];
+    clearAllSelectionHighlights();
+    clearHoverHighlights();
+    
+    // Remove scroll/resize handlers
+    if (scrollRafId !== null) {
+      cancelAnimationFrame(scrollRafId);
+      scrollRafId = null;
+    }
+    window.removeEventListener('scroll', handleScrollResize, true);
+    window.removeEventListener('resize', handleScrollResize);
     
     if (overlayBlocker) {
       overlayBlocker.removeEventListener('mousemove', handlePointerMove, true);
       overlayBlocker.removeEventListener('click', handleOverlayClick, true);
       overlayBlocker.parentNode?.removeChild(overlayBlocker);
       overlayBlocker = null;
-    }
-    
-    if (overlayHighlight) {
-      overlayHighlight.parentNode?.removeChild(overlayHighlight);
-      overlayHighlight = null;
     }
     
     if (toolbar) {
@@ -411,12 +667,13 @@ if (typeof window !== 'undefined' && !window.__sourceSelectorInitialized) {
       if (event.data?.type === 'ENABLE_SOURCE_SELECTOR') {
         isActive = true;
         isToolbarOpen = false;
-        selectedTaggedElement = null;
+        selectedTaggedElements = [];
+        clearAllSelectionHighlights();
         createOverlays();
       } else if (event.data?.type === 'DISABLE_SOURCE_SELECTOR') {
         isActive = false;
         isToolbarOpen = false;
-        selectedTaggedElement = null;
+        selectedTaggedElements = [];
         cleanupOverlays();
       } else if (event.data?.type === 'REQUEST_RACCOON_INSPECT_STATUS') {
         notifyParentReady();
